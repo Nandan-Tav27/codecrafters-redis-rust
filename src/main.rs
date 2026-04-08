@@ -12,7 +12,7 @@ fn main() {
         match stream {
             Ok(mut stream) => {
                 println!("accepted new connection");
-                stream.write_all(buf);
+                stream.write_all(buf).unwrap();
             }
             Err(e) => {
                 println!("error: {}", e);
