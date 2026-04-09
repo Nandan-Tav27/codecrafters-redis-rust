@@ -25,8 +25,10 @@ fn main() {
 fn handle_connection(mut stream: TcpStream) {
     loop {
         let mut buf = [0; 256];
-        let _n = stream.read(&mut buf[..]).unwrap();
-        let write_buf = b"+PONG\r\n";
-        stream.write_all(write_buf).unwrap();
+        let n = stream.read(&mut buf).unwrap();
+        if n == 0 {
+            break;
+        }
+        stream.write_all(b"+PONG\r\n").unwrap();
     }
 }
