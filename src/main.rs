@@ -14,7 +14,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             loop {
                 let _n = match socket.read(&mut buf).await {
                     Ok(0) => return,
-                    Ok(_n) => socket.write_all(b"+PONG\r\n"),
+                    Ok(_n) => {
+                        println!("Reached here");
+                        let _ = socket.write_all(b"+PONG\r\n").await;
+                    }
                     Err(e) => {
                         println!("Failed to read from socket; err = {:}", e);
                         return;
