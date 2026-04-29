@@ -21,7 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let mut parser = resp::Parser::new(&in_buf[0..n]);
                         if let Some(input) = parser.decode_array().unwrap()
                             && input[0].to_lowercase() == "echo"
-                            && input.len() > 2
+                            && input.len() >= 2
                         {
                             let mut encoder = resp::Encoder::new(&mut out_buf);
                             let len = encoder.encode_to_bulk_string(&input[1]).unwrap();
