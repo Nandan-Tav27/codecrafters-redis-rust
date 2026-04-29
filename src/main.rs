@@ -1,6 +1,8 @@
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
+mod resp;
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind("127.0.0.1:6379").await?;
@@ -9,14 +11,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (mut socket, _) = listener.accept().await?;
 
         tokio::spawn(async move {
-            let mut buf = [0; 1024];
+            let mut in_buf = [0; 1024];
+            let mut out_buf = [0; 1024];
 
             loop {
-                let _n = match socket.read(&mut buf).await {
+                match socket.read(&mut in_buf).await {
                     Ok(0) => return,
-                    Ok(_n) => {
-                        println!("Reached here");
-                        let _ = socket.write_all(b"+PONG\r\n").await;
+                    Ok(n) => {
+                        let mut parser = resp::Parser::new(&in_buf[0..n]);
+                        if let Some(input) = parser.decode_array().unwrap()
+                            && input[0].to_lowercase() == "echo"
+                            && input.len() > 2
+                        {
+                            let mut encoder = resp::Encoder::new(&mut out_buf);
+                            let len = encoder.encode_to_bulk_string(&input[1]).unwrap();
+                            let _ = socket.write(&out_buf[..len]).await;
+                        }
                     }
                     Err(e) => {
                         println!("Failed to read from socket; err = {:}", e);
