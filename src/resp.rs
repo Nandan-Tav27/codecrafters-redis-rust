@@ -1,369 +1,493 @@
-pub enum Types {
-    SimpleString,
-    SimpleError,
-    Integetr,
-    BulkString,
-    Array,
+use bytes::{Bytes, BytesMut};
+use memchr::memchr;
+use tokio_util::codec::{Decoder, Encoder};
+
+pub type Value = Bytes;
+pub type Key = Bytes;
+
+type RedisResult = Result<Option<(usize, RedisBufSplit)>, RESPError>;
+
+#[derive(Default)]
+pub struct RESPParser;
+
+#[derive(PartialEq, Clone, Debug)]
+pub enum RedisValueRef {
+    String(Bytes),
+    Error(Bytes),
+    Int(i64),
+    Array(Vec<RedisValueRef>),
+    NullArray,
+    NullBulkString,
 }
 
-pub struct Parser<'a> {
-    remaining: &'a [u8],
+struct BufSplit(usize, usize);
+
+impl BufSplit {
+    #[inline]
+    fn as_slice<'a>(&self, buf: &'a BytesMut) -> &'a [u8] {
+        &buf[self.0..self.1]
+    }
+
+    #[inline]
+    fn as_bytes(&self, buf: &Bytes) -> Bytes {
+        buf.slice(self.0..self.1)
+    }
 }
 
-impl<'a> Parser<'a> {
-    pub fn new(bytes: &'a [u8]) -> Self {
-        Self { remaining: bytes }
-    }
+enum RedisBufSplit {
+    String(BufSplit),
+    Error(BufSplit),
+    Int(i64),
+    Array(Vec<RedisBufSplit>),
+    NullArray,
+    NullBulkString,
+}
 
-    fn next(&mut self) -> Option<u8> {
-        if self.remaining.is_empty() {
-            None
-        } else {
-            let item = self.remaining[0];
-            self.remaining = &self.remaining[1..];
-            Some(item)
-        }
-    }
-
-    fn next_n(&mut self, n: usize) -> Option<&[u8]> {
-        if self.remaining.len() < n {
-            None
-        } else {
-            let item = &self.remaining[0..n];
-            self.remaining = &self.remaining[n..];
-            Some(item)
-        }
-    }
-
-    // Get next bite without consuming
-    fn peek(&self) -> Option<u8> {
-        if self.remaining.is_empty() {
-            None
-        } else {
-            Some(self.remaining[0])
-        }
-    }
-
-    fn consume_crlf(&mut self) -> Result<(), &'static str> {
-        if self.remaining.starts_with(b"\r\n") {
-            self.remaining = &self.remaining[2..];
-            Ok(())
-        } else {
-            Err("could not consume crlf")
-        }
-    }
-
-    fn consume_until_crlf(&mut self) -> Option<&[u8]> {
-        match self.remaining.windows(2).position(|w| w == b"\r\n") {
-            Some(pos) => {
-                let item = &self.remaining[..pos];
-                self.remaining = &self.remaining[pos..];
-                Some(item)
+impl RedisBufSplit {
+    fn redis_value(self, buf: &Bytes) -> RedisValueRef {
+        match self {
+            RedisBufSplit::String(bfs) => RedisValueRef::String(bfs.as_bytes(buf)),
+            RedisBufSplit::Error(bfs) => RedisValueRef::Error(bfs.as_bytes(buf)),
+            RedisBufSplit::Array(arr) => {
+                RedisValueRef::Array(arr.into_iter().map(|bfs| bfs.redis_value(buf)).collect())
             }
-            None => None,
+            RedisBufSplit::NullArray => RedisValueRef::NullArray,
+            RedisBufSplit::NullBulkString => RedisValueRef::NullBulkString,
+            RedisBufSplit::Int(i) => RedisValueRef::Int(i),
         }
     }
+}
 
-    fn is_empty(&self) -> bool {
-        self.remaining.is_empty()
+#[derive(Debug)]
+pub enum RESPError {
+    UnexpectedEnd,
+    UnknownStartingByte,
+    IOError(std::io::Error),
+    IntParseFailure,
+    BadBulkStringSize(i64),
+    BadArraySize(i64),
+}
+
+impl From<std::io::Error> for RESPError {
+    fn from(e: std::io::Error) -> RESPError {
+        RESPError::IOError(e)
+    }
+}
+
+/// Get a word from buf, starting at pos
+#[inline]
+fn word(buf: &BytesMut, pos: usize) -> Option<(usize, BufSplit)> {
+    if buf.len() <= pos {
+        return None;
     }
 
-    pub fn decode_simple_string(&mut self) -> Result<Option<String>, &'static str> {
-        // parse +
-        if self.next() != Some(b'+') {
-            return Err("invalid resp simple string: should begin with '+'");
-        }
-
-        // parse string
-        if let Some(str) = self.consume_until_crlf() {
-            let data = String::from_utf8(str.to_vec())
-                .map_err(|_| "invalid resp simple string: expected UTF8 string")?;
-
-            // parse crlf
-            self.consume_crlf()?;
-
-            // return simple string
-            Ok(Some(data))
+    memchr(b'\r', &buf[pos..]).and_then(|end| {
+        if pos + end + 1 < buf.len() && buf[pos + end + 1] == b'\n' {
+            Some((pos + end + 2, BufSplit(pos, pos + end)))
         } else {
-            Err("invalid resp simple string")
+            None
         }
+    })
+}
+
+fn simple_string(buf: &BytesMut, pos: usize) -> RedisResult {
+    Ok(word(buf, pos).map(|(pos, word)| (pos, RedisBufSplit::String(word))))
+}
+
+fn error(buf: &BytesMut, pos: usize) -> RedisResult {
+    Ok(word(buf, pos).map(|(pos, word)| (pos, RedisBufSplit::Error(word))))
+}
+
+fn int(buf: &BytesMut, pos: usize) -> Result<Option<(usize, i64)>, RESPError> {
+    match word(buf, pos) {
+        Some((pos, word)) => {
+            let s = str::from_utf8(word.as_slice(buf)).map_err(|_| RESPError::IntParseFailure)?;
+            let i = s.parse().map_err(|_| RESPError::IntParseFailure)?;
+            Ok(Some((pos, i)))
+        }
+        None => Ok(None),
     }
+}
 
-    pub fn decode_simple_error(&mut self) -> Result<Option<String>, &'static str> {
-        // parse -
-        if self.next() != Some(b'-') {
-            return Err("invalid resp simple string: should begin with '-'");
-        }
+fn resp_int(buf: &BytesMut, pos: usize) -> RedisResult {
+    Ok(int(buf, pos)?.map(|(pos, int)| (pos, RedisBufSplit::Int(int))))
+}
 
-        // parse error string
-        if let Some(str) = self.consume_until_crlf() {
-            let data = String::from_utf8(str.to_vec())
-                .map_err(|_| "invalid resp error string: expected UTF8 string")?;
-
-            // parse crlf
-            self.consume_crlf()?;
-
-            // return simple error string
-            Ok(Some(data))
-        } else {
-            Err("invalid resp error string")
-        }
-    }
-
-    pub fn decode_integer(&mut self) -> Result<Option<i64>, &'static str> {
-        // parse :
-        if self.next() != Some(b':') {
-            return Err("invalid resp integer: should begin with ':'");
-        }
-
-        let negative = self.peek() == Some(b'-');
-        if negative {
-            self.next();
-        }
-
-        let Some(byte) = self.next() else {
-            return Err("invalid resp integer: exptected digit");
-        };
-        if !byte.is_ascii_digit() {
-            return Err("invalid resp integer: exptected digit");
-        }
-
-        let mut val = (byte - b'0') as i64;
-        while let Some(next_byte) = self.peek() {
-            if next_byte.is_ascii_digit() {
-                val = val * 10 + ((next_byte - b'0') as i64);
-                self.next();
+fn bulk_string(buf: &BytesMut, pos: usize) -> RedisResult {
+    match int(buf, pos)? {
+        Some((pos, -1)) => Ok(Some((pos, RedisBufSplit::NullBulkString))),
+        Some((pos, size)) if size >= 0 => {
+            let total_size = pos + size as usize;
+            if buf.len() < total_size + 2 {
+                Ok(None)
             } else {
-                break;
+                let bb = RedisBufSplit::String(BufSplit(pos, total_size));
+                Ok(Some((total_size + 2, bb)))
             }
         }
-
-        if negative {
-            val = -val;
-        }
-
-        self.consume_crlf()?;
-
-        Ok(Some(val))
+        Some((_pos, bad_size)) => Err(RESPError::BadBulkStringSize(bad_size)),
+        None => Ok(None),
     }
+}
 
-    pub fn decode_bulk_string(&mut self) -> Result<Option<String>, &'static str> {
-        let mut data_len;
-
-        // parse $
-        if self.next() != Some(b'$') {
-            return Err("invalid resp bulk string: should begin with '$'");
-        }
-
-        // parse length
-        if let Some(byte) = self.next() {
-            // null bulk string
-            if byte == b'-' {
-                if self.next() != Some(b'1') {
-                    return Err("invalid resp bulk string");
-                }
-                self.consume_crlf()?;
-                return Ok(None);
-            } else {
-                if !byte.is_ascii_digit() {
-                    return Err("invalid resp bulk string");
-                }
-                data_len = (byte - b'0') as usize;
-                while let Some(next_byte) = self.peek() {
-                    if next_byte.is_ascii_digit() {
-                        data_len = data_len * 10 + ((next_byte - b'0') as usize);
-                        self.next();
-                    } else {
-                        break;
+fn array(buf: &BytesMut, pos: usize) -> RedisResult {
+    match int(buf, pos)? {
+        None => Ok(None),
+        Some((pos, -1)) => Ok(Some((pos, RedisBufSplit::NullArray))),
+        Some((pos, num_elements)) if num_elements >= 0 => {
+            let mut values = Vec::with_capacity(num_elements as usize);
+            let mut curr_pos = pos;
+            for _ in 0..num_elements {
+                match parse(buf, curr_pos)? {
+                    Some((new_pos, value)) => {
+                        curr_pos = new_pos;
+                        values.push(value);
                     }
+                    None => return Ok(None),
                 }
             }
-        } else {
-            return Err("invalid resp bulk string");
-        };
-
-        // parse crlf
-        self.consume_crlf()?;
-
-        // parse data
-        let Some(data_bytes) = self.next_n(data_len) else {
-            return Err("invalid resp bulk string: invalid data field");
-        };
-        let data = String::from_utf8(data_bytes.to_vec())
-            .map_err(|_| "invalid resp bulk string: expected UTF8 string")?;
-
-        // parse crlf
-        self.consume_crlf()?;
-
-        // return data
-        Ok(Some(data))
-    }
-
-    // *<number-of-elements>\r\n<element-1>...<element-n>
-    pub fn decode_array(&mut self) -> Result<Option<Vec<String>>, &'static str> {
-        let mut num_elements;
-
-        // parse *
-        if self.next() != Some(b'*') {
-            return Err("invalid resp array: should begin with '*'");
+            Ok(Some((curr_pos, RedisBufSplit::Array(values))))
         }
-
-        // parse number of elements
-        if let Some(byte) = self.next()
-            && byte.is_ascii_digit()
-        {
-            num_elements = (byte - b'0') as usize;
-            while let Some(next_byte) = self.peek() {
-                if next_byte.is_ascii_digit() {
-                    num_elements = num_elements * 10 + ((next_byte - b'0') as usize);
-                    self.next();
-                } else {
-                    break;
-                }
-            }
-        } else {
-            return Err("invalid resp array: expected number of elements");
-        };
-
-        // parse crlf
-        self.consume_crlf()?;
-
-        let mut elements = Vec::new();
-        // TODO: arrays currently only contain bulk strings
-        for _ in 0..num_elements {
-            match self.decode_bulk_string() {
-                Ok(Some(el)) => elements.push(el),
-                Ok(None) => elements.push("".to_string()),
-                Err(e) => return Err(e),
-            }
-        }
-
-        Ok(Some(elements))
+        Some((_pos, bad_num_elements)) => Err(RESPError::BadArraySize(bad_num_elements)),
     }
 }
 
-pub struct Encoder<'a> {
-    buf: &'a mut [u8],
-    ptr: usize,
+fn parse(buf: &BytesMut, pos: usize) -> RedisResult {
+    if buf.is_empty() {
+        return Ok(None);
+    }
+
+    match buf[pos] {
+        b'+' => simple_string(buf, pos + 1),
+        b'-' => error(buf, pos + 1),
+        b'$' => bulk_string(buf, pos + 1),
+        b':' => resp_int(buf, pos + 1),
+        b'*' => array(buf, pos + 1),
+        _ => Err(RESPError::UnknownStartingByte),
+    }
 }
 
-impl<'a> Encoder<'a> {
-    pub fn new(buf: &'a mut [u8]) -> Self {
-        Self { buf, ptr: 0 }
-    }
+impl Decoder for RESPParser {
+    type Item = RedisValueRef;
+    type Error = RESPError;
 
-    fn set_byte(&mut self, val: u8) -> bool {
-        if self.ptr < self.buf.len() {
-            self.buf[self.ptr] = val;
-            self.ptr += 1;
-            true
-        } else {
-            false
+    fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        if buf.is_empty() {
+            return Ok(None);
+        }
+
+        match parse(buf, 0)? {
+            Some((pos, value)) => {
+                let data = buf.split_to(pos);
+                Ok(Some(value.redis_value(&data.freeze())))
+            }
+            None => Ok(None),
         }
     }
+}
 
-    fn set_bytes(&mut self, val: &[u8]) -> bool {
-        if self.ptr + val.len() <= self.buf.len() {
-            self.buf[self.ptr..self.ptr + val.len()].copy_from_slice(val);
-            self.ptr += val.len();
-            true
-        } else {
-            false
-        }
+impl Encoder<RedisValueRef> for RESPParser {
+    type Error = std::io::Error;
+
+    fn encode(&mut self, item: RedisValueRef, dst: &mut BytesMut) -> std::io::Result<()> {
+        write_redis_value(item, dst);
+        Ok(())
     }
+}
 
-    fn set_crlf(&mut self) -> bool {
-        self.set_bytes(b"\r\n")
-    }
-
-    fn get_ptr(&self) -> usize {
-        self.ptr
-    }
-
-    pub fn encode_to_bulk_string(&mut self, str: &str) -> Result<usize, &'static str> {
-        let size_limit = 1024;
-        let len = str.len();
-        if len > size_limit {
-            return Err("input size exceeds limit, cannot encode to bulk string");
+fn write_redis_value(item: RedisValueRef, dst: &mut BytesMut) {
+    match item {
+        RedisValueRef::Error(e) => {
+            dst.extend_from_slice(b"-");
+            dst.extend_from_slice(&e);
+            dst.extend_from_slice(b"\r\n");
         }
-
-        if !self.set_byte(b'$') {
-            return Err("buffer is not big enough");
+        RedisValueRef::String(s) => {
+            dst.extend_from_slice(b"$");
+            dst.extend_from_slice(s.len().to_string().as_bytes());
+            dst.extend_from_slice(b"\r\n");
+            dst.extend_from_slice(&s);
+            dst.extend_from_slice(b"\r\n");
         }
-
-        if !self.set_bytes(len.to_string().as_bytes()) {
-            return Err("buffer is not big enough");
+        RedisValueRef::Array(arr) => {
+            dst.extend_from_slice(b"*");
+            dst.extend_from_slice(arr.len().to_string().as_bytes());
+            dst.extend_from_slice(b"\r\n");
+            for redis_value in arr {
+                write_redis_value(redis_value, dst);
+            }
         }
-
-        if !self.set_crlf() {
-            return Err("buffer is not big enough");
+        RedisValueRef::Int(i) => {
+            dst.extend_from_slice(b":");
+            dst.extend_from_slice(i.to_string().as_bytes());
+            dst.extend_from_slice(b"\r\n");
         }
-
-        if !self.set_bytes(str.as_bytes()) {
-            return Err("buffer is not big enough");
-        }
-
-        if !self.set_crlf() {
-            return Err("buffer is not big enough");
-        }
-
-        Ok(self.get_ptr())
+        RedisValueRef::NullBulkString => dst.extend_from_slice(b"$-1\r\n"),
+        RedisValueRef::NullArray => dst.extend_from_slice(b"*-1\r\n"),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::BytesMut;
+
+    // --- Decoder tests ---
 
     #[test]
-    fn decode_bulk_str() {
-        let bulk_str = b"$5\r\nhello\r\n";
-        let mut bulk_str_parser = Parser::new(bulk_str);
-        assert_eq!(
-            bulk_str_parser.decode_bulk_string(),
-            Ok(Some("hello".to_string()))
-        );
+    fn decode_simple_string() {
+        let mut buf = BytesMut::from("+OK\r\n");
+        let mut parser = RESPParser;
+        let result = parser.decode(&mut buf).unwrap().unwrap();
+        assert_eq!(result, RedisValueRef::String(Bytes::from("OK")));
+    }
 
-        let bulk_str = b"$10\r\nhelloworld\r\n";
-        let mut bulk_str_parser = Parser::new(bulk_str);
+    #[test]
+    fn decode_error() {
+        let mut buf = BytesMut::from("-ERR unknown command\r\n");
+        let mut parser = RESPParser;
+        let result = parser.decode(&mut buf).unwrap().unwrap();
         assert_eq!(
-            bulk_str_parser.decode_bulk_string(),
-            Ok(Some("helloworld".to_string()))
-        );
-
-        let null_str = b"$-1\r\n";
-        let mut null_str_parser = Parser::new(null_str);
-        assert_eq!(null_str_parser.decode_bulk_string(), Ok(None));
-
-        let err_str = b"5\r\nhello\r\n";
-        let mut err_str_parser = Parser::new(err_str);
-        assert_eq!(
-            err_str_parser.decode_bulk_string(),
-            Err("invalid resp bulk string: should begin with '$'")
+            result,
+            RedisValueRef::Error(Bytes::from("ERR unknown command"))
         );
     }
 
     #[test]
-    fn decode_arr() {
-        let resp_arr = b"*0\r\n";
-        let mut resp_arr_parser = Parser::new(resp_arr);
-        assert_eq!(resp_arr_parser.decode_array(), Ok(Some(vec![])));
+    fn decode_integer() {
+        let mut buf = BytesMut::from(":1337\r\n");
+        let mut parser = RESPParser;
+        let result = parser.decode(&mut buf).unwrap().unwrap();
+        assert_eq!(result, RedisValueRef::Int(1337));
+    }
 
-        let resp_arr = b"*2\r\n$5\r\nhello\r\n$5\r\nworld\r\n";
-        let mut resp_arr_parser = Parser::new(resp_arr);
+    #[test]
+    fn decode_negative_integer() {
+        let mut buf = BytesMut::from(":-42\r\n");
+        let mut parser = RESPParser;
+        let result = parser.decode(&mut buf).unwrap().unwrap();
+        assert_eq!(result, RedisValueRef::Int(-42));
+    }
+
+    #[test]
+    fn decode_bulk_string() {
+        let mut buf = BytesMut::from("$5\r\nhello\r\n");
+        let mut parser = RESPParser;
+        let result = parser.decode(&mut buf).unwrap().unwrap();
+        assert_eq!(result, RedisValueRef::String(Bytes::from("hello")));
+    }
+
+    #[test]
+    fn decode_empty_bulk_string() {
+        let mut buf = BytesMut::from("$0\r\n\r\n");
+        let mut parser = RESPParser;
+        let result = parser.decode(&mut buf).unwrap().unwrap();
+        assert_eq!(result, RedisValueRef::String(Bytes::from("")));
+    }
+
+    #[test]
+    fn decode_null_bulk_string() {
+        let mut buf = BytesMut::from("$-1\r\n");
+        let mut parser = RESPParser;
+        let result = parser.decode(&mut buf).unwrap().unwrap();
+        assert_eq!(result, RedisValueRef::NullBulkString);
+    }
+
+    #[test]
+    fn decode_null_array() {
+        let mut buf = BytesMut::from("*-1\r\n");
+        let mut parser = RESPParser;
+        let result = parser.decode(&mut buf).unwrap().unwrap();
+        assert_eq!(result, RedisValueRef::NullArray);
+    }
+
+    #[test]
+    fn decode_empty_array() {
+        let mut buf = BytesMut::from("*0\r\n");
+        let mut parser = RESPParser;
+        let result = parser.decode(&mut buf).unwrap().unwrap();
+        assert_eq!(result, RedisValueRef::Array(vec![]));
+    }
+
+    #[test]
+    fn decode_array_of_bulk_strings() {
+        let mut buf = BytesMut::from("*2\r\n$5\r\nhello\r\n$5\r\nworld\r\n");
+        let mut parser = RESPParser;
+        let result = parser.decode(&mut buf).unwrap().unwrap();
         assert_eq!(
-            resp_arr_parser.decode_array(),
-            Ok(Some(vec!["hello".to_string(), "world".to_string()]))
+            result,
+            RedisValueRef::Array(vec![
+                RedisValueRef::String(Bytes::from("hello")),
+                RedisValueRef::String(Bytes::from("world")),
+            ])
         );
     }
 
     #[test]
-    fn encode_to_bulk_str() {
-        let str = "hello";
-        let mut res_buf = [0; 1024];
-        let mut encoder = Encoder::new(&mut res_buf);
+    fn decode_mixed_array() {
+        let mut buf = BytesMut::from("*3\r\n:1\r\n$3\r\nfoo\r\n+bar\r\n");
+        let mut parser = RESPParser;
+        let result = parser.decode(&mut buf).unwrap().unwrap();
+        assert_eq!(
+            result,
+            RedisValueRef::Array(vec![
+                RedisValueRef::Int(1),
+                RedisValueRef::String(Bytes::from("foo")),
+                RedisValueRef::String(Bytes::from("bar")),
+            ])
+        );
+    }
 
-        assert_eq!(encoder.encode_to_bulk_string(str), Ok(11));
-        assert_eq!(res_buf[..11], *b"$5\r\nhello\r\n");
+    #[test]
+    fn decode_incomplete_returns_none() {
+        let mut buf = BytesMut::from("$5\r\nhel");
+        let mut parser = RESPParser;
+        let result = parser.decode(&mut buf).unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn decode_empty_returns_none() {
+        let mut buf = BytesMut::new();
+        let mut parser = RESPParser;
+        let result = parser.decode(&mut buf).unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn decode_set_command() {
+        let mut buf = BytesMut::from("*3\r\n$3\r\nSET\r\n$3\r\nfoo\r\n$3\r\nbar\r\n");
+        let mut parser = RESPParser;
+        let result = parser.decode(&mut buf).unwrap().unwrap();
+        assert_eq!(
+            result,
+            RedisValueRef::Array(vec![
+                RedisValueRef::String(Bytes::from("SET")),
+                RedisValueRef::String(Bytes::from("foo")),
+                RedisValueRef::String(Bytes::from("bar")),
+            ])
+        );
+    }
+
+    #[test]
+    fn decode_consumes_buffer() {
+        let mut buf = BytesMut::from("+OK\r\n+NEXT\r\n");
+        let mut parser = RESPParser;
+        let first = parser.decode(&mut buf).unwrap().unwrap();
+        assert_eq!(first, RedisValueRef::String(Bytes::from("OK")));
+        let second = parser.decode(&mut buf).unwrap().unwrap();
+        assert_eq!(second, RedisValueRef::String(Bytes::from("NEXT")));
+    }
+
+    // --- Encoder tests ---
+
+    #[test]
+    fn encode_bulk_string() {
+        let mut buf = BytesMut::new();
+        let mut parser = RESPParser;
+        parser
+            .encode(RedisValueRef::String(Bytes::from("hello")), &mut buf)
+            .unwrap();
+        assert_eq!(buf, "$5\r\nhello\r\n");
+    }
+
+    #[test]
+    fn encode_error() {
+        let mut buf = BytesMut::new();
+        let mut parser = RESPParser;
+        parser
+            .encode(RedisValueRef::Error(Bytes::from("ERR unknown")), &mut buf)
+            .unwrap();
+        assert_eq!(buf, "-ERR unknown\r\n");
+    }
+
+    #[test]
+    fn encode_integer() {
+        let mut buf = BytesMut::new();
+        let mut parser = RESPParser;
+        parser.encode(RedisValueRef::Int(42), &mut buf).unwrap();
+        assert_eq!(buf, ":42\r\n");
+    }
+
+    #[test]
+    fn encode_negative_integer() {
+        let mut buf = BytesMut::new();
+        let mut parser = RESPParser;
+        parser.encode(RedisValueRef::Int(-100), &mut buf).unwrap();
+        assert_eq!(buf, ":-100\r\n");
+    }
+
+    #[test]
+    fn encode_null_bulk_string() {
+        let mut buf = BytesMut::new();
+        let mut parser = RESPParser;
+        parser
+            .encode(RedisValueRef::NullBulkString, &mut buf)
+            .unwrap();
+        assert_eq!(buf, "$-1\r\n");
+    }
+
+    #[test]
+    fn encode_null_array() {
+        let mut buf = BytesMut::new();
+        let mut parser = RESPParser;
+        parser.encode(RedisValueRef::NullArray, &mut buf).unwrap();
+        assert_eq!(buf, "*-1\r\n");
+    }
+
+    #[test]
+    fn encode_array() {
+        let mut buf = BytesMut::new();
+        let mut parser = RESPParser;
+        parser
+            .encode(
+                RedisValueRef::Array(vec![
+                    RedisValueRef::String(Bytes::from("SET")),
+                    RedisValueRef::String(Bytes::from("foo")),
+                    RedisValueRef::String(Bytes::from("bar")),
+                ]),
+                &mut buf,
+            )
+            .unwrap();
+        assert_eq!(buf, "*3\r\n$3\r\nSET\r\n$3\r\nfoo\r\n$3\r\nbar\r\n");
+    }
+
+    #[test]
+    fn encode_empty_array() {
+        let mut buf = BytesMut::new();
+        let mut parser = RESPParser;
+        parser
+            .encode(RedisValueRef::Array(vec![]), &mut buf)
+            .unwrap();
+        assert_eq!(buf, "*0\r\n");
+    }
+
+    // --- Round-trip tests ---
+
+    #[test]
+    fn roundtrip_bulk_string() {
+        let mut encoder = RESPParser;
+        let mut decoder = RESPParser;
+        let original = RedisValueRef::String(Bytes::from("hello"));
+
+        let mut buf = BytesMut::new();
+        encoder.encode(original.clone(), &mut buf).unwrap();
+        let decoded = decoder.decode(&mut buf).unwrap().unwrap();
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn roundtrip_array() {
+        let mut encoder = RESPParser;
+        let mut decoder = RESPParser;
+        let original = RedisValueRef::Array(vec![
+            RedisValueRef::String(Bytes::from("PING")),
+            RedisValueRef::Int(42),
+        ]);
+
+        let mut buf = BytesMut::new();
+        encoder.encode(original.clone(), &mut buf).unwrap();
+        let decoded = decoder.decode(&mut buf).unwrap().unwrap();
+        assert_eq!(decoded, original);
     }
 }
