@@ -41,7 +41,7 @@ fn handle_command(value: RedisValueRef) -> RedisValueRef {
                 _ => return RedisValueRef::Error(Bytes::from("ERR invalid command")),
             };
             match command.as_slice() {
-                b"PING" => RedisValueRef::String(Bytes::from("PONG")),
+                b"PING" => RedisValueRef::SimpleString(Bytes::from("PONG")),
                 b"ECHO" => arr.get(1).cloned().unwrap_or(RedisValueRef::NullBulkString),
                 _ => RedisValueRef::Error(Bytes::from("ERR unknown command")),
             }

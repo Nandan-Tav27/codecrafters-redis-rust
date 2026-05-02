@@ -12,6 +12,7 @@ pub struct RESPParser;
 
 #[derive(PartialEq, Clone, Debug)]
 pub enum RedisValueRef {
+    SimpleString(Bytes),
     String(Bytes),
     Error(Bytes),
     Int(i64),
@@ -200,6 +201,11 @@ fn write_redis_value(item: RedisValueRef, dst: &mut BytesMut) {
         RedisValueRef::Error(e) => {
             dst.extend_from_slice(b"-");
             dst.extend_from_slice(&e);
+            dst.extend_from_slice(b"\r\n");
+        }
+        RedisValueRef::SimpleString(s) => {
+            dst.extend_from_slice(b"+");
+            dst.extend_from_slice(&s);
             dst.extend_from_slice(b"\r\n");
         }
         RedisValueRef::String(s) => {
