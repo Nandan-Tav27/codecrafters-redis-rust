@@ -17,6 +17,7 @@ pub fn execute(operation: Vec<RedisValueRef>, store: DataStore) -> RedisValueRef
         b"RPUSH" => rpush(&operation, store),
         b"LPUSH" => lpush(&operation, store),
         b"LRANGE" => lrange(&operation, store),
+        b"LLEN" => llen(&operation, store),
         _ => RedisValueRef::Error(Bytes::from("ERR unknown command")),
     }
 }
@@ -159,6 +160,18 @@ fn lrange(arr: &[RedisValueRef], store: DataStore) -> RedisValueRef {
             .map(RedisValueRef::String)
             .collect(),
     )
+}
+
+fn llen(arr: &[RedisValueRef], store: DataStore) -> RedisValueRef {
+    if arr.len() != 2 {
+        return RedisValueRef::Error(Bytes::from(
+            "ERR invalid 'LLEN' command: incorrect number of arguments",
+        ));
+    }
+    let Some(list_key) = extract_string(&arr[1]) else {
+        return RedisValueRef::Error(Bytes::from("ERR invalid 'LLEN' command: invalid list key"));
+    };
+    RedisValueRef::Int(store.llen(list_key) as i64)
 }
 
 fn extract_string(value: &RedisValueRef) -> Option<Bytes> {

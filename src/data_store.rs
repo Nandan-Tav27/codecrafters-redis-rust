@@ -106,6 +106,15 @@ impl DataStore {
             _ => None,
         }
     }
+
+    pub fn llen(&self, list_key: Bytes) -> usize {
+        let store = self.store.lock().unwrap();
+        if let Some(Value::List(l)) = store.get(&list_key) {
+            l.len()
+        } else {
+            0
+        }
+    }
 }
 
 fn normalize_index(idx: i64, len: usize) -> usize {
