@@ -133,7 +133,8 @@ fn lpush(arr: &[RedisValueRef], store: DataStore) -> RedisValueRef {
 }
 
 fn lpop(arr: &[RedisValueRef], store: DataStore) -> RedisValueRef {
-    if arr.len() != 2 {
+    let has_count = arr.len() == 3;
+    if arr.len() != 2 && !has_count {
         return RedisValueRef::Error(Bytes::from(
             "ERR invalid 'LPOP' command: incorrect number of arguments",
         ));
@@ -141,7 +142,21 @@ fn lpop(arr: &[RedisValueRef], store: DataStore) -> RedisValueRef {
     let Some(list_key) = extract_string(&arr[1]) else {
         return RedisValueRef::Error(Bytes::from("ERR invalid 'LPOP' command: invalid list key"));
     };
-    if let Some(value) = store.lpop(list_key) {
+    if has_count {
+        let Some(count) = extract_uint(&arr[2]) else {
+            return RedisValueRef::Error(Bytes::from(
+                "ERR invalid 'LPOP' command: invalid element count",
+            ));
+        };
+        RedisValueRef::Array(
+            store
+                .lpop_multiple(list_key, count as usize)
+                .unwrap_or_default()
+                .into_iter()
+                .map(RedisValueRef::String)
+                .collect(),
+        )
+    } else if let Some(value) = store.lpop_one(list_key) {
         RedisValueRef::String(value)
     } else {
         RedisValueRef::NullBulkString

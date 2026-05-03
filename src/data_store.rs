@@ -89,10 +89,22 @@ impl DataStore {
         }
     }
 
-    pub fn lpop(&self, list_key: Bytes) -> Option<Bytes> {
+    pub fn lpop_one(&self, list_key: Bytes) -> Option<Bytes> {
         let mut store = self.store.lock().unwrap();
         if let Some(Value::List(l)) = store.get_mut(&list_key) {
             l.pop_front()
+        } else {
+            None
+        }
+    }
+
+    pub fn lpop_multiple(&self, list_key: Bytes, count: usize) -> Option<Vec<Bytes>> {
+        let mut store = self.store.lock().unwrap();
+        if let Some(Value::List(l)) = store.get_mut(&list_key)
+            && !l.is_empty()
+        {
+            let count = count.min(l.len());
+            Some(l.drain(..count).collect())
         } else {
             None
         }
