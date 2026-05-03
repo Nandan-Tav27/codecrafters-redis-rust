@@ -22,12 +22,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn handle_conn(socket: TcpStream, store: DataStore) {
-    let mut transport = RESPParser::default().framed(socket);
+    let mut transport = RESPParser.framed(socket);
     while let Some(result) = transport.next().await {
         match result {
             Ok(value) => {
                 let response = match value {
-                    RedisValueRef::Array(arr) => operations::execute(arr, store.clone()),
+                    RedisValueRef::Array(arr) => operations::execute(arr, store.clone()).await,
                     _ => RedisValueRef::Error(Bytes::from("ERR expected array")),
                 };
                 if transport.send(response).await.is_err() {

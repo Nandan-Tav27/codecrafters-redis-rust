@@ -5,10 +5,12 @@ use std::{
 };
 
 use bytes::Bytes;
+use tokio::sync::oneshot;
 
 #[derive(Clone)]
 pub struct DataStore {
-    store: Arc<Mutex<HashMap<Bytes, Value>>>,
+    value_store: Arc<Mutex<HashMap<Bytes, Value>>>,
+    channel_store: Arc<Mutex<HashMap<Bytes, VecDeque<oneshot::Sender<Bytes>>>>>,
 }
 
 pub enum Value {
@@ -25,12 +27,13 @@ pub struct StringValue {
 impl DataStore {
     pub fn new() -> Self {
         Self {
-            store: Arc::new(Mutex::new(HashMap::new())),
+            value_store: Arc::new(Mutex::new(HashMap::new())),
+            channel_store: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     pub fn get(&self, key: &Bytes) -> Option<Bytes> {
-        let mut store = self.store.lock().unwrap();
+        let mut store = self.value_store.lock().unwrap();
         let value = store.get(key)?;
         match value {
             Value::String(value) => {
@@ -49,7 +52,7 @@ impl DataStore {
     pub fn set(&self, key: Bytes, val: Bytes, ex: Option<Duration>) -> Option<Bytes> {
         let ex = ex.and_then(|d| Instant::now().checked_add(d));
         let prev = self
-            .store
+            .value_store
             .lock()
             .unwrap()
             .insert(key, Value::String(StringValue { val, ex }));
@@ -60,7 +63,7 @@ impl DataStore {
     }
 
     pub fn rpush(&self, list_key: Bytes, values: VecDeque<Bytes>) -> usize {
-        let mut store = self.store.lock().unwrap();
+        let mut store = self.value_store.lock().unwrap();
         let list = store
             .entry(list_key)
             .or_insert(Value::List(VecDeque::new()));
@@ -74,7 +77,7 @@ impl DataStore {
     }
 
     pub fn lpush(&self, list_key: Bytes, values: VecDeque<Bytes>) -> usize {
-        let mut store = self.store.lock().unwrap();
+        let mut store = self.value_store.lock().unwrap();
         let list = store
             .entry(list_key)
             .or_insert(Value::List(VecDeque::new()));
@@ -89,9 +92,9 @@ impl DataStore {
         }
     }
 
-    pub fn lpop_one(&self, list_key: Bytes) -> Option<Bytes> {
-        let mut store = self.store.lock().unwrap();
-        if let Some(Value::List(l)) = store.get_mut(&list_key) {
+    pub fn lpop_one(&self, list_key: &Bytes) -> Option<Bytes> {
+        let mut store = self.value_store.lock().unwrap();
+        if let Some(Value::List(l)) = store.get_mut(list_key) {
             l.pop_front()
         } else {
             None
@@ -99,7 +102,7 @@ impl DataStore {
     }
 
     pub fn lpop_multiple(&self, list_key: Bytes, count: usize) -> Option<Vec<Bytes>> {
-        let mut store = self.store.lock().unwrap();
+        let mut store = self.value_store.lock().unwrap();
         if let Some(Value::List(l)) = store.get_mut(&list_key)
             && !l.is_empty()
         {
@@ -111,7 +114,7 @@ impl DataStore {
     }
 
     pub fn lrange(&self, list_key: Bytes, start: i64, end: i64) -> Option<Vec<Bytes>> {
-        let store = self.store.lock().unwrap();
+        let store = self.value_store.lock().unwrap();
         let list = store.get(&list_key)?;
         match list {
             Value::List(l) => {
@@ -129,11 +132,31 @@ impl DataStore {
     }
 
     pub fn llen(&self, list_key: Bytes) -> usize {
-        let store = self.store.lock().unwrap();
+        let store = self.value_store.lock().unwrap();
         if let Some(Value::List(l)) = store.get(&list_key) {
             l.len()
         } else {
             0
+        }
+    }
+
+    // --- blocking ops ---
+
+    pub async fn blpop(&self, list_key: Bytes) -> (Bytes, Bytes) {
+        if let Some(value) = self.lpop_one(&list_key) {
+            (list_key, value)
+        } else {
+            let rx = {
+                let (tx, rx) = oneshot::channel();
+                let mut channel_store = self.channel_store.lock().unwrap();
+                channel_store
+                    .entry(list_key.clone())
+                    .or_default()
+                    .push_back(tx);
+                rx
+            };
+            let res = rx.await.unwrap();
+            (list_key, res)
         }
     }
 }

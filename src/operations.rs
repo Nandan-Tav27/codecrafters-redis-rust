@@ -3,7 +3,7 @@ use std::{collections::VecDeque, time::Duration};
 
 use crate::{data_store::DataStore, resp::RedisValueRef};
 
-pub fn execute(operation: Vec<RedisValueRef>, store: DataStore) -> RedisValueRef {
+pub async fn execute(operation: Vec<RedisValueRef>, store: DataStore) -> RedisValueRef {
     let command = match &operation[0] {
         RedisValueRef::String(s) => s.to_ascii_uppercase(),
         _ => return RedisValueRef::Error(Bytes::from("ERR invalid command")),
@@ -17,6 +17,7 @@ pub fn execute(operation: Vec<RedisValueRef>, store: DataStore) -> RedisValueRef
         b"RPUSH" => rpush(&operation, store),
         b"LPUSH" => lpush(&operation, store),
         b"LPOP" => lpop(&operation, store),
+        b"BLPOP" => blpop(&operation, store).await,
         b"LRANGE" => lrange(&operation, store),
         b"LLEN" => llen(&operation, store),
         _ => RedisValueRef::Error(Bytes::from("ERR unknown command")),
@@ -156,11 +157,27 @@ fn lpop(arr: &[RedisValueRef], store: DataStore) -> RedisValueRef {
                 .map(RedisValueRef::String)
                 .collect(),
         )
-    } else if let Some(value) = store.lpop_one(list_key) {
+    } else if let Some(value) = store.lpop_one(&list_key) {
         RedisValueRef::String(value)
     } else {
         RedisValueRef::NullBulkString
     }
+}
+
+async fn blpop(arr: &[RedisValueRef], store: DataStore) -> RedisValueRef {
+    if arr.len() != 3 {
+        return RedisValueRef::Error(Bytes::from(
+            "ERR invalid 'BLPOP' command: incorrect number of arguments",
+        ));
+    }
+    let Some(list_key) = extract_string(&arr[1]) else {
+        return RedisValueRef::Error(Bytes::from("ERR invalid 'LPOP' command: invalid list key"));
+    };
+    let (key, value) = store.blpop(list_key).await;
+    RedisValueRef::Array(vec![
+        RedisValueRef::String(key),
+        RedisValueRef::String(value),
+    ])
 }
 
 fn lrange(arr: &[RedisValueRef], store: DataStore) -> RedisValueRef {
