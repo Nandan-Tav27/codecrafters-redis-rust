@@ -108,6 +108,27 @@ fn rpush(arr: &[RedisValueRef], store: DataStore) -> RedisValueRef {
     RedisValueRef::Int(store.rpush(list_key, values) as i64)
 }
 
+fn lpush(arr: &[RedisValueRef], store: DataStore) -> RedisValueRef {
+    if arr.len() < 3 {
+        return RedisValueRef::Error(Bytes::from(
+            "ERR invalid 'LPUSH' command: incorrect number of arguments",
+        ));
+    }
+    let Some(list_key) = extract_string(&arr[1]) else {
+        return RedisValueRef::Error(Bytes::from("ERR invalid 'LPUSH' command: invalid list key"));
+    };
+    let mut values = VecDeque::new();
+    for val in &arr[2..] {
+        let Some(value) = extract_string(val) else {
+            return RedisValueRef::Error(Bytes::from(
+                "ERR invalid 'LPUSH' command: invalid list value",
+            ));
+        };
+        values.push_back(value);
+    }
+    RedisValueRef::Int(store.lpush(list_key, values) as i64)
+}
+
 fn lrange(arr: &[RedisValueRef], store: DataStore) -> RedisValueRef {
     if arr.len() != 4 {
         return RedisValueRef::Error(Bytes::from(

@@ -73,6 +73,22 @@ impl DataStore {
         }
     }
 
+    pub fn lpush(&self, list_key: Bytes, values: VecDeque<Bytes>) -> usize {
+        let mut store = self.store.lock().unwrap();
+        let list = store
+            .entry(list_key)
+            .or_insert(Value::List(VecDeque::new()));
+        match list {
+            Value::List(l) => {
+                for value in values.into_iter().rev() {
+                    l.push_front(value);
+                }
+                l.len()
+            }
+            _ => 0,
+        }
+    }
+
     pub fn lrange(&self, list_key: Bytes, start: i64, end: i64) -> Option<Vec<Bytes>> {
         let store = self.store.lock().unwrap();
         let list = store.get(&list_key)?;
