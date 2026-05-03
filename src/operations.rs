@@ -20,6 +20,7 @@ pub async fn execute(operation: Vec<RedisValueRef>, store: DataStore) -> RedisVa
         b"BLPOP" => blpop(&operation, store).await,
         b"LRANGE" => lrange(&operation, store),
         b"LLEN" => llen(&operation, store),
+        b"TYPE" => type_op(&operation, store),
         _ => RedisValueRef::Error(Bytes::from("ERR unknown command")),
     }
 }
@@ -171,10 +172,10 @@ async fn blpop(arr: &[RedisValueRef], store: DataStore) -> RedisValueRef {
         ));
     }
     let Some(list_key) = extract_string(&arr[1]) else {
-        return RedisValueRef::Error(Bytes::from("ERR invalid 'LPOP' command: invalid list key"));
+        return RedisValueRef::Error(Bytes::from("ERR invalid 'BLPOP' command: invalid list key"));
     };
     let Some(dur) = extract_float(&arr[2]) else {
-        return RedisValueRef::Error(Bytes::from("ERR invalid 'LPOP' command: invalid duration"));
+        return RedisValueRef::Error(Bytes::from("ERR invalid 'BLPOP' command: invalid duration"));
     };
     if let Some((key, value)) = store.blpop(list_key, Duration::from_secs_f64(dur)).await {
         RedisValueRef::Array(vec![
@@ -227,6 +228,18 @@ fn llen(arr: &[RedisValueRef], store: DataStore) -> RedisValueRef {
         return RedisValueRef::Error(Bytes::from("ERR invalid 'LLEN' command: invalid list key"));
     };
     RedisValueRef::Int(store.llen(list_key) as i64)
+}
+
+fn type_op(arr: &[RedisValueRef], store: DataStore) -> RedisValueRef {
+    if arr.len() != 2 {
+        return RedisValueRef::Error(Bytes::from(
+            "ERR invalid 'TYPE' command: incorrect number of arguments",
+        ));
+    }
+    let Some(list_key) = extract_string(&arr[1]) else {
+        return RedisValueRef::Error(Bytes::from("ERR invalid 'TYPE' command: invalid list key"));
+    };
+    RedisValueRef::SimpleString(store.type_op(&list_key).unwrap_or(Bytes::from("none")))
 }
 
 fn extract_string(value: &RedisValueRef) -> Option<Bytes> {

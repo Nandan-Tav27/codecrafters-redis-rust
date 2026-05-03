@@ -144,6 +144,14 @@ impl DataStore {
         }
     }
 
+    pub fn type_op(&self, list_key: &Bytes) -> Option<Bytes> {
+        let store = self.value_store.lock().unwrap();
+        match store.get(list_key).unwrap() {
+            Value::String(_) => Some(Bytes::from("string")),
+            Value::List(_) => Some(Bytes::from("list")),
+        }
+    }
+
     // --- blocking ops ---
 
     pub async fn blpop(&self, list_key: Bytes, dur: Duration) -> Option<(Bytes, Bytes)> {
