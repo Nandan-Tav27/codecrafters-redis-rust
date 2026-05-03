@@ -15,6 +15,7 @@ pub fn execute(operation: Vec<RedisValueRef>, store: DataStore) -> RedisValueRef
         b"ECHO" => echo(&operation),
         b"SET" => set(&operation, store),
         b"GET" => get(&operation, store),
+        b"RPUSH" => rpush(&operation, store),
         _ => RedisValueRef::Error(Bytes::from("ERR unknown command")),
     }
 }
@@ -84,6 +85,18 @@ fn get(arr: &[RedisValueRef], store: DataStore) -> RedisValueRef {
         Some(val) => RedisValueRef::String(val.clone()),
         None => RedisValueRef::NullBulkString,
     }
+}
+
+fn rpush(arr: &[RedisValueRef], store: DataStore) -> RedisValueRef {
+    let Some(list_key) = extract_string(&arr[1]) else {
+        return RedisValueRef::Error(Bytes::from("ERR invalid 'RPUSH' command: invalid list key"));
+    };
+    let Some(value) = extract_string(&arr[2]) else {
+        return RedisValueRef::Error(Bytes::from(
+            "ERR invalid 'RPUSH' command: invalid list value",
+        ));
+    };
+    RedisValueRef::Int(store.rpush(list_key, value) as i64)
 }
 
 fn extract_string(value: &RedisValueRef) -> Option<Bytes> {
