@@ -65,11 +65,12 @@ impl DataStore {
     pub fn rpush(&self, list_key: Bytes, values: VecDeque<Bytes>) -> usize {
         let mut store = self.value_store.lock().unwrap();
         let list = store
-            .entry(list_key)
+            .entry(list_key.clone())
             .or_insert(Value::List(VecDeque::new()));
         match list {
             Value::List(l) => {
                 l.extend(values);
+                self.notify_waker(&list_key, l);
                 l.len()
             }
             _ => 0,
@@ -79,13 +80,14 @@ impl DataStore {
     pub fn lpush(&self, list_key: Bytes, values: VecDeque<Bytes>) -> usize {
         let mut store = self.value_store.lock().unwrap();
         let list = store
-            .entry(list_key)
+            .entry(list_key.clone())
             .or_insert(Value::List(VecDeque::new()));
         match list {
             Value::List(l) => {
                 for value in values {
                     l.push_front(value);
                 }
+                self.notify_waker(&list_key, l);
                 l.len()
             }
             _ => 0,
@@ -157,6 +159,16 @@ impl DataStore {
             };
             let res = rx.await.unwrap();
             (list_key, res)
+        }
+    }
+
+    fn notify_waker(&self, list_key: &Bytes, list: &mut VecDeque<Bytes>) {
+        let mut channel_store = self.channel_store.lock().unwrap();
+        if let Some(waiters) = channel_store.get_mut(list_key)
+            && let Some(tx) = waiters.pop_front()
+            && let Some(val) = list.pop_front()
+        {
+            let _ = tx.send(val);
         }
     }
 }
