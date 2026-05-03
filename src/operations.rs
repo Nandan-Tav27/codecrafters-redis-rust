@@ -118,12 +118,12 @@ fn lrange(arr: &[RedisValueRef], store: DataStore) -> RedisValueRef {
             "ERR invalid 'LRANGE' command: invalid list key",
         ));
     };
-    let Some(start_index) = extract_uint(&arr[1]) else {
+    let Some(start_index) = extract_uint(&arr[2]) else {
         return RedisValueRef::Error(Bytes::from(
             "ERR invalid 'LRANGE' command: invalid start index",
         ));
     };
-    let Some(end_index) = extract_uint(&arr[1]) else {
+    let Some(end_index) = extract_uint(&arr[3]) else {
         return RedisValueRef::Error(Bytes::from(
             "ERR invalid 'LRANGE' command: invalid end index",
         ));
