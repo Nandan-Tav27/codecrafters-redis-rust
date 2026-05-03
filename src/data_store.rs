@@ -80,11 +80,8 @@ impl DataStore {
             .or_insert(Value::List(VecDeque::new()));
         match list {
             Value::List(l) => {
-                for value in values.into_iter().rev() {
+                for value in values {
                     l.push_front(value);
-                }
-                for item in l.iter() {
-                    print!("{:?} ", item);
                 }
                 l.len()
             }
