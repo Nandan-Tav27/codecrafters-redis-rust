@@ -1,0 +1,40 @@
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
+
+use bytes::Bytes;
+
+#[derive(Clone)]
+pub struct DataStore {
+    store: Arc<Mutex<HashMap<Bytes, Value>>>,
+}
+
+#[derive(Clone)]
+pub struct Value {
+    val: Bytes,
+    ex: Instant,
+}
+
+impl DataStore {
+    pub fn new() -> Self {
+        Self {
+            store: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    pub fn get(&self, key: &Bytes) -> Option<Bytes> {
+        self.store.lock().unwrap().get(key).cloned()
+    }
+
+    pub fn set(&self, key: Bytes, val: Bytes, ex: Option<Duration>) -> Option<Bytes> {
+        let ex = ex.and_then(|d| Instant::now().checked_add(d));
+        self.store
+            .lock()
+            .unwrap()
+            .set(key, Value { val, ex })
+            .cloned()
+    }
+}
+
