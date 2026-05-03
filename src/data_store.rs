@@ -83,6 +83,9 @@ impl DataStore {
                 for value in values.into_iter().rev() {
                     l.push_front(value);
                 }
+                for item in l.iter() {
+                    print!("{:?} ", item);
+                }
                 l.len()
             }
             _ => 0,
@@ -119,4 +122,3 @@ fn normalize_index(idx: i64, len: usize) -> usize {
         idx as usize
     }
 }
-
