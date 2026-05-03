@@ -15,6 +15,7 @@ pub fn execute(operation: Vec<RedisValueRef>, store: DataStore) -> RedisValueRef
         b"SET" => set(&operation, store),
         b"GET" => get(&operation, store),
         b"RPUSH" => rpush(&operation, store),
+        b"LPUSH" => lpush(&operation, store),
         b"LRANGE" => lrange(&operation, store),
         _ => RedisValueRef::Error(Bytes::from("ERR unknown command")),
     }
