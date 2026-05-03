@@ -5,7 +5,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use tokio::sync::oneshot;
+use tokio::{sync::oneshot, time::timeout};
 
 #[derive(Clone)]
 pub struct DataStore {
@@ -146,9 +146,9 @@ impl DataStore {
 
     // --- blocking ops ---
 
-    pub async fn blpop(&self, list_key: Bytes) -> (Bytes, Bytes) {
+    pub async fn blpop(&self, list_key: Bytes, dur: Duration) -> Option<(Bytes, Bytes)> {
         if let Some(value) = self.lpop_one(&list_key) {
-            (list_key, value)
+            Some((list_key, value))
         } else {
             let rx = {
                 let (tx, rx) = oneshot::channel();
@@ -159,8 +159,15 @@ impl DataStore {
                     .push_back(tx);
                 rx
             };
-            let res = rx.await.unwrap();
-            (list_key, res)
+            if dur == Duration::from_secs_f64(0 as f64) {
+                let res = rx.await.unwrap();
+                Some((list_key, res))
+            } else {
+                match timeout(dur, rx).await {
+                    Ok(Ok(res)) => Some((list_key, res)),
+                    _ => None,
+                }
+            }
         }
     }
 

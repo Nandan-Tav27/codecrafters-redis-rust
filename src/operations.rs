@@ -173,11 +173,17 @@ async fn blpop(arr: &[RedisValueRef], store: DataStore) -> RedisValueRef {
     let Some(list_key) = extract_string(&arr[1]) else {
         return RedisValueRef::Error(Bytes::from("ERR invalid 'LPOP' command: invalid list key"));
     };
-    let (key, value) = store.blpop(list_key).await;
-    RedisValueRef::Array(vec![
-        RedisValueRef::String(key),
-        RedisValueRef::String(value),
-    ])
+    let Some(dur) = extract_float(&arr[2]) else {
+        return RedisValueRef::Error(Bytes::from("ERR invalid 'LPOP' command: invalid duration"));
+    };
+    if let Some((key, value)) = store.blpop(list_key, Duration::from_secs_f64(dur)).await {
+        RedisValueRef::Array(vec![
+            RedisValueRef::String(key),
+            RedisValueRef::String(value),
+        ])
+    } else {
+        RedisValueRef::NullArray
+    }
 }
 
 fn lrange(arr: &[RedisValueRef], store: DataStore) -> RedisValueRef {
@@ -238,6 +244,13 @@ fn extract_uint(value: &RedisValueRef) -> Option<u64> {
 }
 
 fn extract_int(value: &RedisValueRef) -> Option<i64> {
+    match value {
+        RedisValueRef::String(s) => std::str::from_utf8(s).ok()?.parse().ok(),
+        _ => None,
+    }
+}
+
+fn extract_float(value: &RedisValueRef) -> Option<f64> {
     match value {
         RedisValueRef::String(s) => std::str::from_utf8(s).ok()?.parse().ok(),
         _ => None,
