@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{collections::VecDeque, time::Duration};
 
 use bytes::Bytes;
 
@@ -88,15 +88,24 @@ fn get(arr: &[RedisValueRef], store: DataStore) -> RedisValueRef {
 }
 
 fn rpush(arr: &[RedisValueRef], store: DataStore) -> RedisValueRef {
+    if arr.len() < 3 {
+        return RedisValueRef::Error(Bytes::from(
+            "ERR invalid 'RPUSH' command: wrong number of arguments",
+        ));
+    }
     let Some(list_key) = extract_string(&arr[1]) else {
         return RedisValueRef::Error(Bytes::from("ERR invalid 'RPUSH' command: invalid list key"));
     };
-    let Some(value) = extract_string(&arr[2]) else {
-        return RedisValueRef::Error(Bytes::from(
-            "ERR invalid 'RPUSH' command: invalid list value",
-        ));
-    };
-    RedisValueRef::Int(store.rpush(list_key, value) as i64)
+    let mut values = VecDeque::new();
+    for val in &arr[2..] {
+        let Some(value) = extract_string(val) else {
+            return RedisValueRef::Error(Bytes::from(
+                "ERR invalid 'RPUSH' command: invalid list value",
+            ));
+        };
+        values.push_back(value);
+    }
+    RedisValueRef::Int(store.rpush(list_key, values) as i64)
 }
 
 fn extract_string(value: &RedisValueRef) -> Option<Bytes> {

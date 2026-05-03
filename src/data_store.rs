@@ -59,14 +59,14 @@ impl DataStore {
         }
     }
 
-    pub fn rpush(&self, list_key: Bytes, val: Bytes) -> usize {
+    pub fn rpush(&self, list_key: Bytes, values: VecDeque<Bytes>) -> usize {
         let mut store = self.store.lock().unwrap();
         let list = store
             .entry(list_key)
             .or_insert(Value::List(VecDeque::new()));
         match list {
             Value::List(l) => {
-                l.push_back(val);
+                l.extend(values);
                 l.len()
             }
             _ => 0,
