@@ -70,8 +70,9 @@ impl DataStore {
         match list {
             Value::List(l) => {
                 l.extend(values);
+                let len = l.len();
                 self.notify_waker(&list_key, l);
-                l.len()
+                len
             }
             _ => 0,
         }
@@ -87,8 +88,9 @@ impl DataStore {
                 for value in values {
                     l.push_front(value);
                 }
+                let len = l.len();
                 self.notify_waker(&list_key, l);
-                l.len()
+                len
             }
             _ => 0,
         }
