@@ -119,19 +119,19 @@ fn lrange(arr: &[RedisValueRef], store: DataStore) -> RedisValueRef {
             "ERR invalid 'LRANGE' command: invalid list key",
         ));
     };
-    let Some(start_index) = extract_uint(&arr[2]) else {
+    let Some(start_index) = extract_int(&arr[2]) else {
         return RedisValueRef::Error(Bytes::from(
             "ERR invalid 'LRANGE' command: invalid start index",
         ));
     };
-    let Some(end_index) = extract_uint(&arr[3]) else {
+    let Some(end_index) = extract_int(&arr[3]) else {
         return RedisValueRef::Error(Bytes::from(
             "ERR invalid 'LRANGE' command: invalid end index",
         ));
     };
     RedisValueRef::Array(
         store
-            .lrange(list_key, start_index as usize, end_index as usize)
+            .lrange(list_key, start_index, end_index)
             .unwrap_or_default()
             .into_iter()
             .map(RedisValueRef::String)
@@ -147,6 +147,13 @@ fn extract_string(value: &RedisValueRef) -> Option<Bytes> {
 }
 
 fn extract_uint(value: &RedisValueRef) -> Option<u64> {
+    match value {
+        RedisValueRef::String(s) => std::str::from_utf8(s).ok()?.parse().ok(),
+        _ => None,
+    }
+}
+
+fn extract_int(value: &RedisValueRef) -> Option<i64> {
     match value {
         RedisValueRef::String(s) => std::str::from_utf8(s).ok()?.parse().ok(),
         _ => None,

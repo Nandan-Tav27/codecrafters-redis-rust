@@ -73,23 +73,34 @@ impl DataStore {
         }
     }
 
-    pub fn lrange(&self, list_key: Bytes, start: usize, end: usize) -> Option<Vec<Bytes>> {
-        if start > end {
-            return None;
-        }
+    pub fn lrange(&self, list_key: Bytes, start: i64, end: i64) -> Option<Vec<Bytes>> {
         let store = self.store.lock().unwrap();
         let list = store.get(&list_key)?;
         match list {
             Value::List(l) => {
-                if start >= l.len() {
+                let new_start = normalize_index(start, l.len());
+                let new_end = normalize_index(end, l.len());
+                if new_start >= l.len() || new_start > new_end {
                     return None;
                 }
-                let end = end.min(l.len() - 1);
-                let values = l.range(start..=end).cloned().collect();
+                let new_end = new_end.min(l.len() - 1);
+                let values = l.range(new_start..=new_end).cloned().collect();
                 Some(values)
             }
             _ => None,
         }
+    }
+}
+
+fn normalize_index(idx: i64, len: usize) -> usize {
+    if idx < 0 {
+        if idx.unsigned_abs() as usize > len {
+            0
+        } else {
+            (idx + len as i64) as usize
+        }
+    } else {
+        idx as usize
     }
 }
 
