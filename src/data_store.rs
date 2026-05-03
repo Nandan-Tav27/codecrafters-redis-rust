@@ -72,5 +72,24 @@ impl DataStore {
             _ => 0,
         }
     }
+
+    pub fn lrange(&self, list_key: Bytes, start: usize, end: usize) -> Option<Vec<Bytes>> {
+        if start > end {
+            return None;
+        }
+        let store = self.store.lock().unwrap();
+        let list = store.get(&list_key)?;
+        match list {
+            Value::List(l) => {
+                if start >= l.len() {
+                    return None;
+                }
+                let end = end.min(l.len() - 1);
+                let values = l.range(start..=end).cloned().collect();
+                Some(values)
+            }
+            _ => None,
+        }
+    }
 }
 

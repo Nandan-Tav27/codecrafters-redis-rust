@@ -1,6 +1,5 @@
-use std::{collections::VecDeque, time::Duration};
-
 use bytes::Bytes;
+use std::{collections::VecDeque, time::Duration};
 
 use crate::{data_store::DataStore, resp::RedisValueRef};
 
@@ -90,7 +89,7 @@ fn get(arr: &[RedisValueRef], store: DataStore) -> RedisValueRef {
 fn rpush(arr: &[RedisValueRef], store: DataStore) -> RedisValueRef {
     if arr.len() < 3 {
         return RedisValueRef::Error(Bytes::from(
-            "ERR invalid 'RPUSH' command: wrong number of arguments",
+            "ERR invalid 'RPUSH' command: incorrect number of arguments",
         ));
     }
     let Some(list_key) = extract_string(&arr[1]) else {
@@ -106,6 +105,37 @@ fn rpush(arr: &[RedisValueRef], store: DataStore) -> RedisValueRef {
         values.push_back(value);
     }
     RedisValueRef::Int(store.rpush(list_key, values) as i64)
+}
+
+fn lrange(arr: &[RedisValueRef], store: DataStore) -> RedisValueRef {
+    if arr.len() != 4 {
+        return RedisValueRef::Error(Bytes::from(
+            "ERR invalid 'LRANGE' command: incorrect number of arguments",
+        ));
+    }
+    let Some(list_key) = extract_string(&arr[1]) else {
+        return RedisValueRef::Error(Bytes::from(
+            "ERR invalid 'LRANGE' command: invalid list key",
+        ));
+    };
+    let Some(start_index) = extract_uint(&arr[1]) else {
+        return RedisValueRef::Error(Bytes::from(
+            "ERR invalid 'LRANGE' command: invalid start index",
+        ));
+    };
+    let Some(end_index) = extract_uint(&arr[1]) else {
+        return RedisValueRef::Error(Bytes::from(
+            "ERR invalid 'LRANGE' command: invalid end index",
+        ));
+    };
+    RedisValueRef::Array(
+        store
+            .lrange(list_key, start_index as usize, end_index as usize)
+            .unwrap_or_default()
+            .into_iter()
+            .map(RedisValueRef::String)
+            .collect(),
+    )
 }
 
 fn extract_string(value: &RedisValueRef) -> Option<Bytes> {

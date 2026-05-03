@@ -2,9 +2,6 @@ use bytes::{Bytes, BytesMut};
 use memchr::memchr;
 use tokio_util::codec::{Decoder, Encoder};
 
-pub type Value = Bytes;
-pub type Key = Bytes;
-
 type RedisResult = Result<Option<(usize, RedisBufSplit)>, RESPError>;
 
 #[derive(Default)]
@@ -61,7 +58,6 @@ impl RedisBufSplit {
 
 #[derive(Debug)]
 pub enum RESPError {
-    UnexpectedEnd,
     UnknownStartingByte,
     IOError(std::io::Error),
     IntParseFailure,
