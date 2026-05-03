@@ -146,7 +146,7 @@ impl DataStore {
 
     pub fn type_op(&self, list_key: &Bytes) -> Option<Bytes> {
         let store = self.value_store.lock().unwrap();
-        match store.get(list_key).unwrap() {
+        match store.get(list_key)? {
             Value::String(_) => Some(Bytes::from("string")),
             Value::List(_) => Some(Bytes::from("list")),
         }
