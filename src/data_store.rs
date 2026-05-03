@@ -89,6 +89,15 @@ impl DataStore {
         }
     }
 
+    pub fn lpop(&self, list_key: Bytes) -> Option<Bytes> {
+        let mut store = self.store.lock().unwrap();
+        if let Some(Value::List(l)) = store.get_mut(&list_key) {
+            l.pop_front()
+        } else {
+            None
+        }
+    }
+
     pub fn lrange(&self, list_key: Bytes, start: i64, end: i64) -> Option<Vec<Bytes>> {
         let store = self.store.lock().unwrap();
         let list = store.get(&list_key)?;

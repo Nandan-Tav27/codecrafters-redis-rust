@@ -16,6 +16,7 @@ pub fn execute(operation: Vec<RedisValueRef>, store: DataStore) -> RedisValueRef
         b"GET" => get(&operation, store),
         b"RPUSH" => rpush(&operation, store),
         b"LPUSH" => lpush(&operation, store),
+        b"LPOP" => lpop(&operation, store),
         b"LRANGE" => lrange(&operation, store),
         b"LLEN" => llen(&operation, store),
         _ => RedisValueRef::Error(Bytes::from("ERR unknown command")),
@@ -129,6 +130,22 @@ fn lpush(arr: &[RedisValueRef], store: DataStore) -> RedisValueRef {
         values.push_back(value);
     }
     RedisValueRef::Int(store.lpush(list_key, values) as i64)
+}
+
+fn lpop(arr: &[RedisValueRef], store: DataStore) -> RedisValueRef {
+    if arr.len() != 2 {
+        return RedisValueRef::Error(Bytes::from(
+            "ERR invalid 'LPOP' command: incorrect number of arguments",
+        ));
+    }
+    let Some(list_key) = extract_string(&arr[1]) else {
+        return RedisValueRef::Error(Bytes::from("ERR invalid 'LPOP' command: invalid list key"));
+    };
+    if let Some(value) = store.lpop(list_key) {
+        RedisValueRef::String(value)
+    } else {
+        RedisValueRef::NullBulkString
+    }
 }
 
 fn lrange(arr: &[RedisValueRef], store: DataStore) -> RedisValueRef {
